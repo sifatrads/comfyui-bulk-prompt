@@ -161,10 +161,11 @@ Connect `filename_tag` output to a text node, then concatenate it with your save
 
 ## Credits
 
-The Ollama integration UX — the model-list endpoint and the dynamic model dropdown /
-🔄 Reconnect button — is inspired by
-[**comfyui-ollama**](https://github.com/stavsap/comfyui-ollama) by **Stav Sapir**,
-licensed under Apache-2.0. (This node calls Ollama's public REST API with its own
-standard-library code.) See
+The Ollama integration UX — the idea of a model-list endpoint and the on-node model
+dropdown / 🔄 Reconnect button — is inspired by
+[**comfyui-ollama**](https://github.com/stavsap/comfyui-ollama) by **Stav Sapir**
+(`stavsap`), licensed under Apache-2.0. Our node was written independently and calls
+Ollama's public REST API with standard-library code (it does not copy comfyui-ollama's
+source). A copy of their license is included as
 [`LICENSE-APACHE-2.0-comfyui-ollama.txt`](LICENSE-APACHE-2.0-comfyui-ollama.txt).
-This project's own code is licensed under the MIT License (see [`LICENSE`](LICENSE)).
+ComfyUI-BulkPrompt's own code is licensed under the MIT License (see [`LICENSE`](LICENSE)).

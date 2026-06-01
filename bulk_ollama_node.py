@@ -13,10 +13,12 @@ other custom node. The server URL/port is fully configurable on the node
 Credit / attribution
 ---------------------
 The model dropdown + 🔄 Reconnect UX (web/bulk_ollama.js) and the model-list
-endpoint approach are inspired by comfyui-ollama by Stav Sapir, licensed under
-Apache-2.0:
+endpoint approach are inspired by comfyui-ollama by Stav Sapir (GitHub: stavsap),
+licensed under Apache-2.0:
     https://github.com/stavsap/comfyui-ollama
-See LICENSE-APACHE-2.0-comfyui-ollama.txt. This project's own code is MIT.
+This node was written independently against Ollama's public REST API and does not
+copy comfyui-ollama's source. See LICENSE-APACHE-2.0-comfyui-ollama.txt.
+ComfyUI-BulkPrompt's own code is MIT.
 
 Requires:  a running Ollama server (https://ollama.com). No pip install needed.
 """

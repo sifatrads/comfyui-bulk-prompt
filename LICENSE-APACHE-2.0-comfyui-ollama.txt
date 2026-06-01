@@ -1,17 +1,21 @@
 ATTRIBUTION
 ===========
 
-The Ollama integration in this project (bulk_ollama_node.py and
-web/bulk_ollama.js) — specifically the /ollama model-list route, the dynamic
-model dropdown + Reconnect button, and the ollama Client.generate(...) call
-pattern — is adapted from:
+Part of this project — the optional Ollama prompt-improver node
+(bulk_ollama_node.py and web/bulk_ollama.js) — was inspired by the design of:
 
-    comfyui-ollama  by Stav Sapir
+    comfyui-ollama  by Stav Sapir  (GitHub: stavsap)
     https://github.com/stavsap/comfyui-ollama
 
-which is licensed under the Apache License, Version 2.0, reproduced below.
-The adapted files carry prominent notices that they were modified. The rest of
-this project (ComfyUI-BulkPrompt) is licensed under the MIT License (see LICENSE).
+Specifically the idea of a server-side model-list endpoint and the on-node model
+dropdown + "Reconnect" button. Our implementation was written independently and
+talks to Ollama's public HTTP REST API (/api/tags, /api/generate) using only the
+Python standard library; it does not copy or redistribute comfyui-ollama's
+source code.
+
+comfyui-ollama is licensed under the Apache License, Version 2.0, a full copy of
+which is reproduced below as a courtesy and for attribution. ComfyUI-BulkPrompt's
+own code is licensed under the MIT License (see LICENSE).
 
 -------------------------------------------------------------------------------
 
