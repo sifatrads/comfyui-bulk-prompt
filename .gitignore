@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Runtime state (per-install row counter)
+state.json
+
+# Personal / private prompt data — keep only the example CSV
+csv_files/*
+!csv_files/example_prompts.csv
