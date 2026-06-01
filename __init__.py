@@ -7,7 +7,8 @@ try:
     NODE_CLASS_MAPPINGS.update(_ollama.NODE_CLASS_MAPPINGS)
     NODE_DISPLAY_NAME_MAPPINGS.update(_ollama.NODE_DISPLAY_NAME_MAPPINGS)
 except Exception as e:
-    print(f"[BulkPrompt] Ollama node disabled: {e}")
+    print(f"[BulkPrompt] Ollama Improver node disabled ({e}). "
+          f"Run 'pip install ollama' to enable it.")
 
 WEB_DIRECTORY = "./web"
 

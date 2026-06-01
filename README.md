@@ -2,7 +2,7 @@
 
 Batch-run your workflow once per prompt from a **CSV file**, a **Google Sheets URL**, or **pasted text**, and optionally improve each prompt with a local **Ollama** model.
 
-**No Python dependencies** — every node uses only the standard library (`csv`, `urllib`, `json`). The optional 🦙 Ollama Improver node talks to a running [Ollama](https://ollama.com) server over its HTTP REST API (nothing to `pip install`).
+The core loader has **no Python dependencies** — the CSV / Sheets / Paste nodes use only the standard library (`csv`, `urllib`, `json`). The optional 🦙 Ollama Improver node uses the official [`ollama`](https://github.com/ollama/ollama-python) Python library (`pip install ollama`) to talk to a running [Ollama](https://ollama.com) server.
 
 ---
 
@@ -16,7 +16,7 @@ Batch-run your workflow once per prompt from a **CSV file**, a **Google Sheets U
 2. Restart ComfyUI.
 3. The nodes appear under the category **BulkPrompt** in the node menu.
 
-No `pip install` step is required. The optional 🦙 Ollama Improver node only needs a running [Ollama](https://ollama.com) server (see below).
+The core nodes need no `pip install`. The optional 🦙 Ollama Improver node needs the `ollama` package (`pip install ollama`, or it is installed automatically from `requirements.txt` by ComfyUI Manager) plus a running [Ollama](https://ollama.com) server (see below).
 
 ---
 
@@ -25,7 +25,7 @@ No `pip install` step is required. The optional 🦙 Ollama Improver node only n
 | Node | What it does |
 |------|-------------|
 | 📋 Bulk Prompt Loader (CSV / Sheets) | Main node — loads one row per queue run from a CSV file, Google Sheets URL, or pasted text |
-| 🦙 Bulk Prompt Ollama Improver | Rewrites each row's prompt with a local Ollama model (optional, via Ollama's REST API) |
+| 🦙 Bulk Prompt Ollama Improver | Rewrites each row's prompt with a local Ollama model (optional, via the official `ollama` Python library) |
 | 🌐 Google Sheets Fetcher | Fetches raw CSV text from a published Sheets URL |
 | 🔄 Bulk Prompt Reset Counter | Resets the row counter back to 0 |
 
@@ -107,8 +107,9 @@ No `pip install` step is required. The optional 🦙 Ollama Improver node only n
 The **🦙 Bulk Prompt Ollama Improver** node rewrites each prompt with a local
 [Ollama](https://ollama.com) model before it reaches your sampler.
 
-It calls Ollama's HTTP REST API directly (`/api/tags`, `/api/generate`) — no Python
-package to install. Just make sure your Ollama server is running (`ollama serve`).
+It uses the official [`ollama`](https://github.com/ollama/ollama-python) Python library.
+Install it with `pip install ollama` (or let ComfyUI Manager pull it from `requirements.txt`)
+and make sure your Ollama server is running (`ollama serve`).
 
 1. Add the **🦙 Bulk Prompt Ollama Improver** node.
 2. Wire the loader's **`positive`** output into the node's **`positive`** input.
@@ -120,13 +121,22 @@ package to install. Just make sure your Ollama server is running (`ollama serve`
 4. Edit **instruction** to tell the model what to do (default: rewrite the prompt
    to be more vivid and detailed, output only the improved prompt).
 5. Wire the node's **`result`** output into your **CLIP Text Encode**.
-6. Tune **keep_alive** / **keep_alive_unit** (how long Ollama keeps the model loaded)
-   and **timeout** (max seconds to wait for a response). Toggle **enabled** off to pass
-   prompts through unchanged.
+6. Tune **keep_alive_minutes** (minutes Ollama keeps the model loaded; `-1` = forever,
+   `0` = unload immediately) and **timeout** (max seconds to wait for a response).
+   Toggle **enabled** off to pass prompts through unchanged.
+7. Leave **trim_output** on (default) to keep only the prompt — it strips any chat
+   wrapper the model adds, e.g. a *"Sure! Here's an improved version:"* preamble,
+   `---` / ```` ``` ```` / `Prompt:` headers, surrounding quotes, and trailing offers
+   like *"Let me know if you'd like changes!"*. Turn it off to use the model's raw reply.
 
-Outputs: `result` (improved prompt), `context` (Ollama context for chaining),
-`meta` (JSON with model, timings, token counts). The improved text is also shown
-on the node.
+Outputs: `result` (the improved — and, by default, trimmed — prompt), `context`
+(Ollama context for chaining), `meta` (JSON with model, timings, token counts, and a
+`trimmed` flag). The result is also shown on the node.
+
+> **Compatibility:** the node uses the official `ollama` library with version-tolerant
+> response handling (works across ollama-python 0.4→0.6 and recent Ollama servers), and
+> declares `VALIDATE_INPUTS` so the dynamically-fetched model list passes ComfyUI's
+> backend validation on current and older ComfyUI builds.
 
 ---
 
@@ -159,13 +169,10 @@ Connect `filename_tag` output to a text node, then concatenate it with your save
 
 ---
 
-## Credits
+## License
 
-The Ollama integration UX — the idea of a model-list endpoint and the on-node model
-dropdown / 🔄 Reconnect button — is inspired by
-[**comfyui-ollama**](https://github.com/stavsap/comfyui-ollama) by **Stav Sapir**
-(`stavsap`), licensed under Apache-2.0. Our node was written independently and calls
-Ollama's public REST API with standard-library code (it does not copy comfyui-ollama's
-source). A copy of their license is included as
-[`LICENSE-APACHE-2.0-comfyui-ollama.txt`](LICENSE-APACHE-2.0-comfyui-ollama.txt).
-ComfyUI-BulkPrompt's own code is licensed under the MIT License (see [`LICENSE`](LICENSE)).
+ComfyUI-BulkPrompt is licensed under the MIT License (see [`LICENSE`](LICENSE)).
+
+The 🦙 Ollama Improver node is built on the official
+[`ollama`](https://github.com/ollama/ollama-python) Python library (MIT-licensed),
+installed separately via `pip`.

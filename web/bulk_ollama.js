@@ -3,22 +3,11 @@
   - Dynamic model dropdown + 🔄 Reconnect button (fetches the model list from
     the Ollama server via the /bulkprompt/ollama/get_models route).
   - Read-only result display ("Show Text") updated on execution.
-
-  Credit / attribution:
-  The model dropdown + 🔄 Reconnect UX is inspired by comfyui-ollama by
-  Stav Sapir (Apache-2.0): https://github.com/stavsap/comfyui-ollama
 */
 import { app } from "../../scripts/app.js";
 
 app.registerExtension({
     name: "BulkPrompt.OllamaImprover",
-    aboutPageBadges: [
-        {
-            label: "Ollama UX inspired by comfyui-ollama (Stav Sapir, Apache-2.0)",
-            url: "https://github.com/stavsap/comfyui-ollama",
-            icon: "pi pi-github",
-        },
-    ],
 
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "BulkPromptOllama") return;
@@ -94,11 +83,21 @@ app.registerExtension({
                 overflow: "auto",
             });
             box.textContent = "🦙 (no output yet)";
-            this.addDOMWidget("ollama_result", "ollama_result_ui", box, {
-                serialize: false,
-                hideOnZoom: false,
-            });
-            this.__ollamaResult = box;
+            // addDOMWidget is a ComfyUI litegraph extension — absent (or able to
+            // throw) on very old / non-DOM frontends. Guard it so a missing or
+            // failing DOM widget can never break node creation; onExecuted
+            // already null-checks __ollamaResult, so the node still works.
+            try {
+                if (typeof this.addDOMWidget === "function") {
+                    this.addDOMWidget("ollama_result", "ollama_result_ui", box, {
+                        serialize: false,
+                        hideOnZoom: false,
+                    });
+                    this.__ollamaResult = box;
+                }
+            } catch (e) {
+                console.warn("[BulkPrompt] result display unavailable on this frontend:", e);
+            }
 
             // Initial population (waits for the widget to read its real value).
             await updateModels();

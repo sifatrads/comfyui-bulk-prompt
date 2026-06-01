@@ -1,0 +1,3 @@
+# Only the 🦙 Bulk Prompt Ollama Improver node needs this.
+# The core CSV / Sheets / Paste loader uses the Python standard library only.
+ollama>=0.4.0
