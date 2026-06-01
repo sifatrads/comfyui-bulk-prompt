@@ -15,6 +15,7 @@ Requires:  a running Ollama server (https://ollama.com) and the `ollama` package
 
 import json
 import re
+import time
 
 import ollama
 
@@ -58,6 +59,34 @@ def _model_name(m) -> str:
     if not name and isinstance(m, dict):
         name = m.get("model") or m.get("name")
     return name or ""
+
+
+# Last-known model list, so the `model` combo always has REAL options (an empty
+# combo "()" is what made saved workflows load with their widget values shifted).
+# Refreshed opportunistically here and on every 🔄 Reconnect (the route below).
+_MODELS_CACHE = {"names": [], "ts": 0.0}
+_PLACEHOLDER = "(start Ollama, then 🔄 Reconnect)"
+
+
+def _cache_models(names):
+    if names:
+        _MODELS_CACHE["names"] = list(names)
+        _MODELS_CACHE["ts"] = time.time()
+
+
+def _list_models_cached():
+    """Model names for the combo. Uses a short-lived cache and a quick, fail-safe
+    query so opening the node menu never blocks on a slow/absent Ollama server."""
+    if not _MODELS_CACHE["names"] or time.time() - _MODELS_CACHE["ts"] > 5.0:
+        try:
+            resp = ollama.Client(host=DEFAULT_URL, timeout=1.5).list()
+            models = getattr(resp, "models", None)
+            if models is None and isinstance(resp, dict):
+                models = resp.get("models")
+            _cache_models([n for n in (_model_name(m) for m in (models or [])) if n])
+        except Exception:
+            pass
+    return list(_MODELS_CACHE["names"]) or [_PLACEHOLDER]
 
 
 # ── prompt extraction: strip the conversational wrapper an LLM may add ───────────
@@ -415,6 +444,7 @@ try:
             if models is None and isinstance(resp, dict):
                 models = resp.get("models")                 # pre-0.4 dict era
             names = [n for n in (_model_name(m) for m in (models or [])) if n]
+            _cache_models(names)                            # so INPUT_TYPES has options too
             return web.json_response(names)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -459,9 +489,10 @@ class BulkPromptOllama:
                     "tooltip": "Ollama server URL. Change this for a custom host/port "
                                "(e.g. http://192.168.1.50:11434), then click 🔄 Reconnect.",
                 }),
-                "model": ((), {
-                    "tooltip": "Pick a model. Click 🔄 Reconnect to (re)load the list "
-                               "from the Ollama server.",
+                "model": (_list_models_cached(), {
+                    "tooltip": "Pick a model (auto-loaded from the Ollama server at the "
+                               "default URL). After changing url or pulling new models, "
+                               "click 🔄 Reconnect to refresh the list.",
                 }),
                 "keep_alive_minutes": ("INT", {
                     "default": 5, "min": -1, "max": 1440, "step": 1,

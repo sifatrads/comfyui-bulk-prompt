@@ -19,6 +19,9 @@ app.registerExtension({
             const urlWidget   = this.widgets.find((w) => w.name === "url");
             const modelWidget = this.widgets.find((w) => w.name === "model");
             const refreshBtn  = this.addWidget("button", "🔄 Reconnect", null, () => {});
+            // Don't serialize the button — a stray serialized value would push every
+            // saved widget value down a slot and shift the node's fields on reload.
+            refreshBtn.serialize = false;
 
             const fetchModels = async (url) => {
                 const r = await fetch("/bulkprompt/ollama/get_models", {
