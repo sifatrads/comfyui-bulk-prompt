@@ -70,10 +70,25 @@ function applyUpdate(d) {
     const mine = !d.origin_client_id || api.clientId === d.origin_client_id;
     if (d.running && mine && !bulkDriveLock) {
         bulkDriveLock = true;
-        setTimeout(() => {
-            Promise.resolve(app.queuePrompt(0)).finally(() => {
+        setTimeout(async () => {
+            try {
+                // Mark the NEXT run of this node as an auto-loop continuation so the
+                // backend ADVANCES the loop instead of restarting at manual_index.
+                // A manual Queue press never hits this path, so it stays a fresh run.
+                const r = await fetch("/bulkprompt/loader/continue", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ node_id: d.node_id }),
+                });
+                if (!r.ok) throw new Error("HTTP " + r.status);
+                await app.queuePrompt(0);
+            } catch (e) {
+                // If the flag can't be set, STOP rather than risk restarting the
+                // batch mid-loop. Press Queue to resume.
+                console.error("[BulkPrompt] auto-loop stopped (continue flag failed):", e);
+            } finally {
                 bulkDriveLock = false;
-            });
+            }
         }, 50);
     }
 }

@@ -144,6 +144,32 @@ def _current_client_id():
         return None
 
 
+# ── auto-loop continuation flag ─────────────────────────────────────────────────
+# The front-end marks the NEXT run of a node as an auto-loop CONTINUATION (right
+# before it re-queues) so the node advances the loop instead of restarting at
+# manual_index. A manual Queue press never sets this, so the backend can tell a
+# user-initiated run from a browser-driven one — which is what makes reset_on_start
+# behave predictably.
+_CONTINUE = set()
+
+try:
+    from server import PromptServer
+    from aiohttp import web
+
+    @PromptServer.instance.routes.post("/bulkprompt/loader/continue")
+    async def _bulkprompt_loader_continue(request):
+        try:
+            data = await request.json()
+            nid = str(data.get("node_id") or "")
+            if nid:
+                _CONTINUE.add(nid)
+            return web.json_response({"ok": True})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+except Exception as e:  # pragma: no cover - never block import outside ComfyUI
+    print(f"[BulkPrompt] loader continue-route not registered: {e}")
+
+
 # ── main node ─────────────────────────────────────────────────────────────────
 
 class BulkPromptLoader:
@@ -179,19 +205,21 @@ class BulkPromptLoader:
                 }),
                 "loop_forever": (["no", "yes"], {
                     "default": "no",
-                    "tooltip": "After the last row, start over from row 0"
+                    "tooltip": "After the last row, loop back to the start row (manual_index)"
                 }),
                 "reset_on_start": (["yes", "no"], {
                     "default": "yes",
-                    "tooltip": "When the batch finishes, the next queue restarts at "
-                               "the start row (yes) or stays done (no)."
+                    "tooltip": "yes = each time YOU press Queue, (re)start at "
+                               "manual_index, then auto-advance. no = resume where the "
+                               "loop left off (manual_index is used only on the first run)."
                 }),
                 # ── manual override ────────────────────────────────────────
                 "manual_index": ("INT", {
-                    "default": 0, "min": 0, "max": 9999,
-                    "tooltip": "Start row. Auto-loop begins here and advances; change "
-                               "it to start the batch somewhere else. With "
-                               "auto_loop=disabled it picks exactly this row."
+                    "default": 1, "min": 1, "max": 99999,
+                    "tooltip": "Start row, 1-based — matches the 'Row N / total' "
+                               "display. With reset_on_start=yes, every Queue press "
+                               "(re)starts the batch here; the auto-loop then advances. "
+                               "auto_loop=disabled loads exactly this row."
                 }),
                 # IMPORTANT: append new widgets at the END of this dict. ComfyUI
                 # restores saved workflows by widget POSITION, so inserting a widget
@@ -248,27 +276,33 @@ class BulkPromptLoader:
         total = len(rows)
 
         # ── determine current row ─────────────────────────────────────────
-        # manual_index is the START row. It seeds the loop counter so a batch can
-        # begin anywhere (e.g. resume at row 59) and re-applies the moment you
-        # change it. Auto-driven loop iterations leave manual_index untouched, so
-        # they advance the saved counter instead of re-seeding. Clamp into range
-        # in case the CSV shrank.
-        start        = min(max(int(manual_index), 0), total - 1)
-        seed_key     = state_key + "::seed"
-        state        = _read_state()
-        is_first_run = state_key not in state
+        # manual_index is the 1-based START row (matches the "Row N" display).
+        start   = min(max(int(manual_index) - 1, 0), total - 1)
+        node_id = str(unique_id) if unique_id is not None else None
+
+        # Was this run kicked off by the browser auto-loop (a continuation) or by a
+        # manual Queue press? The front-end sets a per-node flag right before it
+        # re-queues; consume it here. A manual Queue carries no flag.
+        is_autodrive = bool(node_id) and node_id in _CONTINUE
+        if node_id:
+            _CONTINUE.discard(node_id)
+
+        st         = _read_state()
+        saved      = st.get(state_key)
+        mi_key     = state_key + "::mi"
+        mi_changed = st.get(mi_key) != int(manual_index)
 
         if auto_loop == "disabled":
-            # Pure manual control: the row is exactly manual_index.
-            idx = start
-        else:
-            seed_changed = state.get(seed_key) != manual_index
-            if is_first_run or seed_changed:
-                idx = start                       # start (or restart) at manual_index
-                _set_row(state_key, idx)
-                _set_row(seed_key, manual_index)
+            idx = start                                  # load exactly manual_index
+        elif is_autodrive and saved is not None:
+            idx = min(int(saved), total - 1)             # continuation → advance
+        else:                                            # a fresh, manual Queue
+            if reset_on_start == "yes" or saved is None or mi_changed:
+                idx = start                              # (re)start at manual_index
             else:
-                idx = min(_get_row(state_key), total - 1)   # advance the loop
+                idx = min(int(saved), total - 1)         # resume where we left off
+            _set_row(state_key, idx)
+            _set_row(mi_key, int(manual_index))
 
         row       = rows[idx]
         is_last   = (idx == total - 1)
