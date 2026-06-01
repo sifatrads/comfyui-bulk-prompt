@@ -169,13 +169,6 @@ class BulkPromptLoader:
                     "default": "https://docs.google.com/spreadsheets/d/.../pub?output=csv",
                     "multiline": False,
                 }),
-                "pasted_data":     ("STRING", {
-                    "multiline": True,
-                    "default": "",
-                    "tooltip": "Used when source = Paste Text. One prompt per line, "
-                               "a comma-separated list on one line, or full CSV "
-                               "(header row + rows).",
-                }),
                 "positive_column": ("STRING", {"default": "positive"}),
                 "negative_column": ("STRING", {"default": "negative"}),
                 "tag_column":      ("STRING", {"default": "filename_tag"}),
@@ -190,12 +183,26 @@ class BulkPromptLoader:
                 }),
                 "reset_on_start": (["yes", "no"], {
                     "default": "yes",
-                    "tooltip": "Reset to row 0 when you first queue (recommended)"
+                    "tooltip": "When the batch finishes, the next queue restarts at "
+                               "the start row (yes) or stays done (no)."
                 }),
                 # ── manual override ────────────────────────────────────────
                 "manual_index": ("INT", {
                     "default": 0, "min": 0, "max": 9999,
-                    "tooltip": "Only used when auto_loop=disabled"
+                    "tooltip": "Start row. Auto-loop begins here and advances; change "
+                               "it to start the batch somewhere else. With "
+                               "auto_loop=disabled it picks exactly this row."
+                }),
+                # IMPORTANT: append new widgets at the END of this dict. ComfyUI
+                # restores saved workflows by widget POSITION, so inserting a widget
+                # in the middle shifts every saved value below it — that is what made
+                # the column fields load one slot off after pasted_data was added.
+                "pasted_data": ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "Used when source = Paste Text. One prompt per line, "
+                               "a comma-separated list on one line, or full CSV "
+                               "(header row + rows).",
                 }),
             },
             "hidden": {
@@ -240,20 +247,28 @@ class BulkPromptLoader:
             raise ValueError("[BulkPrompt] No data rows found.")
         total = len(rows)
 
-        # ── first-run reset ───────────────────────────────────────────────
-        # We detect "first run" by checking if the state key is missing
-        state = _read_state()
-        is_first_run = state_key not in state
-        if is_first_run and reset_on_start == "yes":
-            _reset_row(state_key)
-
         # ── determine current row ─────────────────────────────────────────
+        # manual_index is the START row. It seeds the loop counter so a batch can
+        # begin anywhere (e.g. resume at row 59) and re-applies the moment you
+        # change it. Auto-driven loop iterations leave manual_index untouched, so
+        # they advance the saved counter instead of re-seeding. Clamp into range
+        # in case the CSV shrank.
+        start        = min(max(int(manual_index), 0), total - 1)
+        seed_key     = state_key + "::seed"
+        state        = _read_state()
+        is_first_run = state_key not in state
+
         if auto_loop == "disabled":
-            idx = min(manual_index, total - 1)
+            # Pure manual control: the row is exactly manual_index.
+            idx = start
         else:
-            idx = _get_row(state_key)
-            # Clamp in case CSV shrank
-            idx = min(idx, total - 1)
+            seed_changed = state.get(seed_key) != manual_index
+            if is_first_run or seed_changed:
+                idx = start                       # start (or restart) at manual_index
+                _set_row(state_key, idx)
+                _set_row(seed_key, manual_index)
+            else:
+                idx = min(_get_row(state_key), total - 1)   # advance the loop
 
         row       = rows[idx]
         is_last   = (idx == total - 1)
@@ -278,10 +293,14 @@ class BulkPromptLoader:
         will_continue = False
         if auto_loop == "enabled":
             if is_last:
-                _set_row(state_key, 0)   # reset so the next manual queue starts fresh
                 if loop_forever == "yes":
+                    _set_row(state_key, start)   # wrap back to the start row
                     will_continue = True
-                    print("[BulkPrompt] 🔁 All rows done — looping back to row 0")
+                    print(f"[BulkPrompt] 🔁 All rows done — looping back to row {start + 1}")
+                elif reset_on_start == "yes":
+                    _set_row(state_key, start)   # next queue restarts at the start row
+                    print("[BulkPrompt] ✅ All rows complete — stopping "
+                          "(next queue restarts at the start row).")
                 else:
                     print("[BulkPrompt] ✅ All rows complete — stopping.")
             else:
