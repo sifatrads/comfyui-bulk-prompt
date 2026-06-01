@@ -25,6 +25,18 @@ DEFAULT_URL = "http://127.0.0.1:11434"
 _ResponseError = getattr(ollama, "ResponseError", Exception)
 
 
+def _is_timeout(exc) -> bool:
+    """True if exc is (or reads as) an HTTP connect/read timeout."""
+    try:
+        import httpx
+        if isinstance(exc, httpx.TimeoutException):
+            return True
+    except Exception:
+        pass
+    text = f"{type(exc).__name__} {exc}".lower()
+    return "timeout" in text or "timed out" in text
+
+
 # ── helpers ─────────────────────────────────────────────────────────────────────
 
 def _normalize_url(url: str) -> str:
@@ -458,7 +470,9 @@ class BulkPromptOllama:
                 }),
                 "timeout": ("INT", {
                     "default": 120, "min": 5, "max": 3600, "step": 5,
-                    "tooltip": "Max seconds to wait for the Ollama response.",
+                    "tooltip": "Max seconds to wait for the response. Large models "
+                               "(e.g. 14B) need more — the first run also loads the "
+                               "model into VRAM. Use 300+ if you hit timeouts.",
                 }),
                 "enabled": ("BOOLEAN", {
                     "default": True,
@@ -531,14 +545,32 @@ class BulkPromptOllama:
         if ctx is not None:
             kwargs["context"] = ctx
 
+        # `timeout` is the generation budget (the read timeout). Use a short,
+        # separate connect timeout so a truly-unreachable server fails fast
+        # instead of waiting the whole budget. NOTE: the first call to a big model
+        # also has to load it into VRAM, which counts against this budget.
+        gen_timeout = float(timeout)
         try:
-            response = ollama.Client(host=url_n, timeout=int(timeout)).generate(**kwargs)
+            import httpx
+            client_timeout = httpx.Timeout(gen_timeout, connect=min(10.0, gen_timeout))
+        except Exception:
+            client_timeout = gen_timeout
+
+        try:
+            response = ollama.Client(host=url_n, timeout=client_timeout).generate(**kwargs)
         except _ResponseError as e:
             code = getattr(e, "status_code", None)
             code = code if isinstance(code, int) and code > 0 else "?"
             raise RuntimeError(f"[BulkPrompt] Ollama returned an error (HTTP {code}): {e}")
         except Exception as e:
-            raise RuntimeError(f"[BulkPrompt] Could not reach Ollama at {url_n}: {e}")
+            if _is_timeout(e):
+                raise RuntimeError(
+                    f"[BulkPrompt] Ollama timed out after {int(gen_timeout)}s on model "
+                    f"'{model}'. Large models take longer to load and generate — raise "
+                    f"this node's 'timeout' (e.g. 300) and retry. Server: {url_n}")
+            raise RuntimeError(
+                f"[BulkPrompt] Could not reach Ollama at {url_n}: {e}. "
+                f"Check the server is running and reachable from ComfyUI.")
 
         def _field(obj, key, default=None):
             v = getattr(obj, key, None)
