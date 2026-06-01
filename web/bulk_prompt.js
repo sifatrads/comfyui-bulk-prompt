@@ -1,11 +1,89 @@
 /*
   ComfyUI-BulkPrompt — frontend extension
-  Shows: current prompt text, filename tag, row counter (blue), progress bar
+  - Renders current prompt text, filename tag, row counter (blue) and a progress
+    bar on the BulkPromptLoader node.
+  - Listens for the "bulkprompt.update" event broadcast by the Python node and
+    updates the matching node by id.
+  - Drives the auto-loop from the browser: while rows remain it calls
+    app.queuePrompt(0), so each run carries this tab's real client_id and ComfyUI's
+    native status (node borders, sampler progress, queue count) keeps updating.
 */
 import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
+
+// One queue per loop cycle — guards against double-queueing when several
+// "bulkprompt.update" events arrive close together (e.g. multiple loader nodes).
+let bulkDriveLock = false;
+
+function applyUpdate(d) {
+    if (d.node_id == null) return;
+
+    // The server sends unique_id as a string; getNodeById may expect a number.
+    const node =
+        app.graph.getNodeById(d.node_id) ||
+        app.graph.getNodeById(Number(d.node_id)) ||
+        app.graph._nodes_by_id?.[d.node_id] ||
+        app.graph._nodes_by_id?.[String(d.node_id)];
+    if (!node || !node.__bulk) return;
+
+    const { rowCounter, tagLine, promptLine, bar, pctLabel } = node.__bulk;
+
+    const cur   = d.current_row;
+    const total = d.total_rows;
+    const last  = d.is_last_row;
+    if (cur === undefined || total === undefined) return;
+
+    const pct = total ? Math.round(((cur + 1) / total) * 100) : 0;
+
+    // progress bar
+    bar.style.width      = pct + "%";
+    bar.style.background = last
+        ? "linear-gradient(90deg, #22c55e, #16a34a)"
+        : "linear-gradient(90deg, #4a9eff, #a78bfa)";
+
+    // row counter — blue while running, green when done
+    rowCounter.style.color = last ? "#22c55e" : "#4a9eff";
+    rowCounter.textContent = last
+        ? `✅  ${total} / ${total} — All done!`
+        : `▶  Row  ${cur + 1}  /  ${total}`;
+
+    // filename tag
+    tagLine.style.color   = last ? "#22c55e" : "#60aaff";
+    tagLine.textContent   = d.filename_tag
+        ? `🏷  ${d.filename_tag}`
+        : "🏷  (no tag)";
+
+    // prompt preview
+    const positive = d.positive ?? "";
+    promptLine.style.borderLeftColor = last ? "#22c55e" : "#4a9eff";
+    promptLine.textContent = positive
+        ? `💬  ${positive.length > 90 ? positive.slice(0, 90) + "…" : positive}`
+        : "💬  —";
+
+    // pct label
+    pctLabel.style.color = last ? "#22c55e" : "#4a9eff";
+    pctLabel.textContent = pct + "%";
+
+    // ── front-end loop driver ──────────────────────────────────────────
+    // Only the tab that originated the run drives the loop; other tabs just
+    // mirror the display. Re-queue the whole graph once per cycle.
+    const mine = !d.origin_client_id || api.clientId === d.origin_client_id;
+    if (d.running && mine && !bulkDriveLock) {
+        bulkDriveLock = true;
+        setTimeout(() => {
+            Promise.resolve(app.queuePrompt(0)).finally(() => {
+                bulkDriveLock = false;
+            });
+        }, 50);
+    }
+}
 
 app.registerExtension({
     name: "BulkPrompt.ProgressBar",
+
+    setup() {
+        api.addEventListener("bulkprompt.update", (e) => applyUpdate(e.detail || {}));
+    },
 
     async nodeCreated(node) {
         if (node.comfyClass !== "BulkPromptLoader") return;
@@ -109,49 +187,8 @@ app.registerExtension({
             hideOnZoom: false,
         });
 
-        // ── update on execution output ─────────────────────────────────
-        const origOnExecuted = node.onExecuted?.bind(node);
-        node.onExecuted = function(output) {
-            if (origOnExecuted) origOnExecuted(output);
-
-            const cur      = output?.current_row?.[0];
-            const total    = output?.total_rows?.[0];
-            const last     = output?.is_last_row?.[0];
-            const positive = output?.positive?.[0]     ?? "";
-            const tag      = output?.filename_tag?.[0] ?? "";
-
-            if (cur === undefined || total === undefined) return;
-
-            const pct     = Math.round(((cur + 1) / total) * 100);
-            const running = !last;
-
-            // progress bar
-            bar.style.width      = pct + "%";
-            bar.style.background = last
-                ? "linear-gradient(90deg, #22c55e, #16a34a)"
-                : "linear-gradient(90deg, #4a9eff, #a78bfa)";
-
-            // row counter — always blue, green on done
-            rowCounter.style.color  = last ? "#22c55e" : "#4a9eff";
-            rowCounter.textContent  = last
-                ? `✅  ${total} / ${total} — All done!`
-                : `▶  Row  ${cur + 1}  /  ${total}`;
-
-            // filename tag — blue
-            tagLine.style.color    = last ? "#22c55e" : "#60aaff";
-            tagLine.textContent    = tag
-                ? `🏷  ${tag}`
-                : "🏷  (no tag)";
-
-            // prompt preview
-            promptLine.style.borderLeftColor = last ? "#22c55e" : "#4a9eff";
-            promptLine.textContent = positive
-                ? `💬  ${positive.length > 90 ? positive.slice(0, 90) + "…" : positive}`
-                : "💬  —";
-
-            // pct label — blue
-            pctLabel.style.color   = last ? "#22c55e" : "#4a9eff";
-            pctLabel.textContent   = pct + "%";
-        };
+        // Stash element refs so the global "bulkprompt.update" listener can
+        // find and update this node's widgets by id.
+        node.__bulk = { rowCounter, tagLine, promptLine, bar, pctLabel };
     },
 });

@@ -1,12 +1,16 @@
 """
 ComfyUI-BulkPrompt
-Loads prompts from CSV / Google Sheets and AUTO-LOOPS until all rows are done.
+Loads prompts from a CSV file, a Google Sheets URL, or pasted text, and
+AUTO-LOOPS until all rows are done.
 
 How auto-loop works:
-  - After each generation, the node uses ComfyUI's PromptServer API to
-    re-queue itself automatically — no manual queue count needed.
-  - It stops automatically when the last row is reached (or wraps if loop=yes).
-  - A front-end JS snippet adds a visual progress bar to the node.
+  - After each run the node BROADCASTS a "bulkprompt.update" event (row, prompt,
+    progress) to every connected browser via PromptServer.send_sync(sid=None).
+  - The front-end extension (web/bulk_prompt.js) renders that update on the node
+    and, while more rows remain, drives the next run with app.queuePrompt(0).
+    Driving from the browser means each run carries the real client_id, so
+    ComfyUI's native status (node borders, sampler progress, queue count) shows.
+  - It stops automatically at the last row (or wraps if loop_forever=yes).
 
 Place CSV files in:  ComfyUI/custom_nodes/ComfyUI-BulkPrompt/csv_files/
 """
@@ -14,9 +18,8 @@ Place CSV files in:  ComfyUI/custom_nodes/ComfyUI-BulkPrompt/csv_files/
 import os
 import csv
 import json
+import hashlib
 import urllib.request
-import threading
-import time
 import folder_paths
 
 NODE_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -83,60 +86,62 @@ def _parse_csv(text: str) -> list:
     return rows
 
 
-# ── auto-queue via PromptServer ───────────────────────────────────────────────
+def _parse_pasted(text: str) -> list:
+    """
+    Auto-detect parser for the "Paste Text" source:
+      - no non-empty lines              -> []
+      - single line WITH comma          -> each comma item = one prompt
+      - single line WITHOUT comma       -> one prompt
+      - multi-line WITH a detected header (first line contains
+        positive/prompt/negative/filename) -> delegate to _parse_csv (full CSV)
+      - multi-line otherwise            -> one prompt per line
 
-def _trigger_next_queue():
+    Note: a single comma'd line is treated as a LIST of prompts, not one CSV
+    row. For CSV semantics, paste a header line first or use multiple lines.
     """
-    Asks ComfyUI to queue one more prompt after a short delay.
-    Uses the internal PromptServer which is always available.
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return []
+
+    if len(lines) == 1:
+        line = lines[0]
+        if "," in line:
+            return [{"positive": item.strip(), "negative": "", "filename_tag": ""}
+                    for item in line.split(",") if item.strip()]
+        return [{"positive": line, "negative": "", "filename_tag": ""}]
+
+    # multi-line: only treat as CSV when the first line looks like a header
+    first_lower = lines[0].lower()
+    looks_like_header = any(h in first_lower for h in
+                            ("positive", "prompt", "negative", "filename"))
+    if looks_like_header:
+        return _parse_csv(text)
+
+    # default: one prompt per line (commas inside a prompt are preserved)
+    return [{"positive": ln, "negative": "", "filename_tag": ""} for ln in lines]
+
+
+# ── live update broadcast ──────────────────────────────────────────────────────
+
+def _broadcast_update(payload: dict):
     """
-    def _do():
-        time.sleep(0.3)   # let current generation finish writing files
-        try:
-            from server import PromptServer
-            # Post to the /prompt endpoint — same as clicking Queue Prompt once
-            PromptServer.instance.send_sync("crystools.monitor", {})  # wake monitor
-        except Exception:
-            pass
-        try:
-            import urllib.request as ur
-            data = json.dumps({"client_id": ""}).encode()
-            req  = ur.Request(
-                "http://127.0.0.1:8188/queue",
-                data=json.dumps({"delete": []}).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST"
-            )
-        except Exception:
-            pass
-        # Most reliable: use the /prompt POST with the last prompt id
-        try:
-            import urllib.request as ur
-            # Get last prompt from history
-            with ur.urlopen("http://127.0.0.1:8188/history?max_items=1") as r:
-                history = json.loads(r.read())
-            if history:
-                last_id  = list(history.keys())[0]
-                last_prompt = history[last_id]["prompt"]
-                # last_prompt = [number, id, prompt_dict, extra, output_ids]
-                prompt_payload = {
-                    "prompt":  last_prompt[2],
-                    "extra_data": last_prompt[3] if len(last_prompt) > 3 else {},
-                    "client_id": "",
-                }
-                data = json.dumps(prompt_payload).encode()
-                req  = ur.Request(
-                    "http://127.0.0.1:8188/prompt",
-                    data=data,
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with ur.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read())
-                    print(f"[BulkPrompt] Auto-queued next run → prompt_id {result.get('prompt_id','?')}")
-        except Exception as e:
-            print(f"[BulkPrompt] Auto-queue failed: {e}")
-    threading.Thread(target=_do, daemon=True).start()
+    Push a status update to EVERY connected browser (sid=None broadcasts).
+    Broadcasting bypasses client_id routing, so the node display updates on the
+    first run and on every front-end-driven loop iteration alike.
+    """
+    try:
+        from server import PromptServer
+        PromptServer.instance.send_sync("bulkprompt.update", payload)
+    except Exception as e:
+        print(f"[BulkPrompt] update broadcast failed: {e}")
+
+
+def _current_client_id():
+    try:
+        from server import PromptServer
+        return getattr(PromptServer.instance, "client_id", None)
+    except Exception:
+        return None
 
 
 # ── main node ─────────────────────────────────────────────────────────────────
@@ -144,8 +149,8 @@ def _trigger_next_queue():
 class BulkPromptLoader:
     """
     Loads one prompt per run from CSV / Google Sheets.
-    With auto_loop=ON it re-queues itself after every generation
-    and stops automatically when all rows are done.
+    With auto_loop=ON it broadcasts a progress update after every run; the
+    front-end re-queues the next run and it stops when all rows are done.
     """
 
     CATEGORY     = "BulkPrompt"
@@ -158,11 +163,18 @@ class BulkPromptLoader:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "source":          (["CSV File", "Google Sheets URL"],),
+                "source":          (["CSV File", "Google Sheets URL", "Paste Text"],),
                 "csv_file":        (_list_csv_files(),),
                 "sheets_url":      ("STRING", {
                     "default": "https://docs.google.com/spreadsheets/d/.../pub?output=csv",
                     "multiline": False,
+                }),
+                "pasted_data":     ("STRING", {
+                    "multiline": True,
+                    "default": "",
+                    "tooltip": "Used when source = Paste Text. One prompt per line, "
+                               "a comma-separated list on one line, or full CSV "
+                               "(header row + rows).",
                 }),
                 "positive_column": ("STRING", {"default": "positive"}),
                 "negative_column": ("STRING", {"default": "negative"}),
@@ -186,6 +198,9 @@ class BulkPromptLoader:
                     "tooltip": "Only used when auto_loop=disabled"
                 }),
             },
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+            },
         }
 
     @classmethod
@@ -194,28 +209,35 @@ class BulkPromptLoader:
 
     def load_prompt(
         self,
-        source, csv_file, sheets_url,
+        source, csv_file, sheets_url, pasted_data,
         positive_column, negative_column, tag_column,
         auto_loop, loop_forever, reset_on_start, manual_index,
+        unique_id=None,
     ):
-        # ── load CSV rows ─────────────────────────────────────────────────
+        # ── load prompt rows from the selected source ─────────────────────
         if source == "Google Sheets URL":
             try:
                 text = _fetch_url(sheets_url.strip())
                 state_key = "url:" + sheets_url.strip()[:80]
             except Exception as e:
                 raise RuntimeError(f"[BulkPrompt] Sheets fetch failed: {e}")
-        else:
+            rows = _parse_csv(text)
+        elif source == "Paste Text":
+            text = pasted_data or ""
+            digest = hashlib.md5(text.encode("utf-8")).hexdigest()[:16]
+            state_key = "paste:" + digest
+            rows = _parse_pasted(text)
+        else:  # "CSV File"
             path = os.path.join(CSV_DIR, csv_file)
             if not os.path.exists(path):
                 raise FileNotFoundError(f"[BulkPrompt] File not found: {path}")
             with open(path, "r", encoding="utf-8-sig") as fh:
                 text = fh.read()
             state_key = "file:" + csv_file
+            rows = _parse_csv(text)
 
-        rows = _parse_csv(text)
         if not rows:
-            raise ValueError("[BulkPrompt] CSV has no data rows.")
+            raise ValueError("[BulkPrompt] No data rows found.")
         total = len(rows)
 
         # ── first-run reset ───────────────────────────────────────────────
@@ -252,20 +274,33 @@ class BulkPromptLoader:
         print(f"[BulkPrompt] ▶ Row {idx + 1}/{total}  {'(last)' if is_last else ''}")
         print(f"[BulkPrompt]   prompt: {positive[:80]}...")
 
-        # ── advance counter & decide whether to re-queue ──────────────────
+        # ── advance counter & decide whether the loop continues ───────────
+        will_continue = False
         if auto_loop == "enabled":
             if is_last:
+                _set_row(state_key, 0)   # reset so the next manual queue starts fresh
                 if loop_forever == "yes":
-                    _set_row(state_key, 0)
+                    will_continue = True
                     print("[BulkPrompt] 🔁 All rows done — looping back to row 0")
-                    _trigger_next_queue()
                 else:
-                    # Reset so next manual queue starts fresh
-                    _set_row(state_key, 0)
                     print("[BulkPrompt] ✅ All rows complete — stopping.")
             else:
                 _set_row(state_key, idx + 1)
-                _trigger_next_queue()
+                will_continue = True
+
+        # ── broadcast the display update to every browser ─────────────────
+        # sid=None broadcast reaches the canvas regardless of which client_id
+        # queued this run. The front-end drives the next run when running=True.
+        _broadcast_update({
+            "node_id": str(unique_id) if unique_id is not None else None,
+            "current_row": idx,
+            "total_rows": total,
+            "is_last_row": is_last,
+            "positive": positive,
+            "filename_tag": filename_tag,
+            "running": will_continue,
+            "origin_client_id": _current_client_id(),
+        })
 
         return (positive, negative, filename_tag, idx, total, is_last)
 
