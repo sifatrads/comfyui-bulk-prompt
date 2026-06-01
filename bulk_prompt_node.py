@@ -205,21 +205,21 @@ class BulkPromptLoader:
                 }),
                 "loop_forever": (["no", "yes"], {
                     "default": "no",
-                    "tooltip": "After the last row, loop back to the start row (manual_index)"
+                    "tooltip": "After the last row, loop back to row 0"
                 }),
                 "reset_on_start": (["yes", "no"], {
                     "default": "yes",
-                    "tooltip": "yes = each time YOU press Queue, (re)start at "
-                               "manual_index, then auto-advance. no = resume where the "
-                               "loop left off (manual_index is used only on the first run)."
+                    "tooltip": "yes = each Queue press starts the batch at row 0. "
+                               "no = start at manual_index (which keeps counting up as "
+                               "the loop runs)."
                 }),
-                # ── manual override ────────────────────────────────────────
+                # ── live counter / start row ───────────────────────────────
                 "manual_index": ("INT", {
-                    "default": 1, "min": 1, "max": 99999,
-                    "tooltip": "Start row, 1-based — matches the 'Row N / total' "
-                               "display. With reset_on_start=yes, every Queue press "
-                               "(re)starts the batch here; the auto-loop then advances. "
-                               "auto_loop=disabled loads exactly this row."
+                    "default": 0, "min": 0, "max": 99999,
+                    "tooltip": "Live row counter (0-based: 0 = first row). It "
+                               "auto-advances as the loop runs; edit it to jump. "
+                               "reset_on_start=yes starts each Queue at 0; "
+                               "reset_on_start=no starts at this value."
                 }),
                 # IMPORTANT: append new widgets at the END of this dict. ComfyUI
                 # restores saved workflows by widget POSITION, so inserting a widget
@@ -276,33 +276,30 @@ class BulkPromptLoader:
         total = len(rows)
 
         # ── determine current row ─────────────────────────────────────────
-        # manual_index is the 1-based START row (matches the "Row N" display).
-        start   = min(max(int(manual_index) - 1, 0), total - 1)
+        # manual_index IS the live counter (0-based). The front-end writes the
+        # current row back into it after every step, so it ticks up as the loop
+        # runs and you can scrub it by hand. There is no separate saved counter —
+        # manual_index is the single source of truth.
+        cur     = min(max(int(manual_index), 0), total - 1)
         node_id = str(unique_id) if unique_id is not None else None
 
-        # Was this run kicked off by the browser auto-loop (a continuation) or by a
-        # manual Queue press? The front-end sets a per-node flag right before it
-        # re-queues; consume it here. A manual Queue carries no flag.
+        # Browser auto-loop continuation, or a manual Queue press? The front-end
+        # sets a per-node flag right before it re-queues; consume it here.
         is_autodrive = bool(node_id) and node_id in _CONTINUE
         if node_id:
             _CONTINUE.discard(node_id)
 
-        st         = _read_state()
-        saved      = st.get(state_key)
-        mi_key     = state_key + "::mi"
-        mi_changed = st.get(mi_key) != int(manual_index)
-
         if auto_loop == "disabled":
-            idx = start                                  # load exactly manual_index
-        elif is_autodrive and saved is not None:
-            idx = min(int(saved), total - 1)             # continuation → advance
-        else:                                            # a fresh, manual Queue
-            if reset_on_start == "yes" or saved is None or mi_changed:
-                idx = start                              # (re)start at manual_index
+            idx = cur                                    # load exactly manual_index
+        elif is_autodrive:
+            # Continuation: advance from the row the widget is showing.
+            if cur >= total - 1:
+                idx = 0 if loop_forever == "yes" else total - 1
             else:
-                idx = min(int(saved), total - 1)         # resume where we left off
-            _set_row(state_key, idx)
-            _set_row(mi_key, int(manual_index))
+                idx = cur + 1
+        else:                                            # a fresh, manual Queue
+            # reset_on_start=yes → start at 0; no → start at manual_index as-is.
+            idx = 0 if reset_on_start == "yes" else cur
 
         row       = rows[idx]
         is_last   = (idx == total - 1)
@@ -323,23 +320,18 @@ class BulkPromptLoader:
         print(f"[BulkPrompt] ▶ Row {idx + 1}/{total}  {'(last)' if is_last else ''}")
         print(f"[BulkPrompt]   prompt: {positive[:80]}...")
 
-        # ── advance counter & decide whether the loop continues ───────────
+        # ── decide whether the loop continues ─────────────────────────────
+        # The front-end writes `idx` back into manual_index and (when running)
+        # re-queues; the backend advances on the next continuation. No separate
+        # counter is stored — manual_index is the source of truth.
         will_continue = False
         if auto_loop == "enabled":
-            if is_last:
-                if loop_forever == "yes":
-                    _set_row(state_key, start)   # wrap back to the start row
-                    will_continue = True
-                    print(f"[BulkPrompt] 🔁 All rows done — looping back to row {start + 1}")
-                elif reset_on_start == "yes":
-                    _set_row(state_key, start)   # next queue restarts at the start row
-                    print("[BulkPrompt] ✅ All rows complete — stopping "
-                          "(next queue restarts at the start row).")
-                else:
-                    print("[BulkPrompt] ✅ All rows complete — stopping.")
-            else:
-                _set_row(state_key, idx + 1)
+            if not is_last or loop_forever == "yes":
                 will_continue = True
+                if is_last:
+                    print("[BulkPrompt] 🔁 All rows done — looping back to row 0")
+            else:
+                print("[BulkPrompt] ✅ All rows complete — stopping.")
 
         # ── broadcast the display update to every browser ─────────────────
         # sid=None broadcast reaches the canvas regardless of which client_id

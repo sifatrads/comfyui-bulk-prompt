@@ -64,6 +64,17 @@ function applyUpdate(d) {
     pctLabel.style.color = last ? "#22c55e" : "#4a9eff";
     pctLabel.textContent = pct + "%";
 
+    // ── live counter: mirror the current row back into manual_index ─────
+    // manual_index IS the counter (0-based), so it ticks up as the loop runs.
+    // Must be set BEFORE the re-queue below so the next run carries this value.
+    if (typeof cur === "number") {
+        const miWidget = node.widgets?.find((w) => w.name === "manual_index");
+        if (miWidget && miWidget.value !== cur) {
+            miWidget.value = cur;
+            node.setDirtyCanvas?.(true, true);
+        }
+    }
+
     // ── front-end loop driver ──────────────────────────────────────────
     // Only the tab that originated the run drives the loop; other tabs just
     // mirror the display. Re-queue the whole graph once per cycle.
