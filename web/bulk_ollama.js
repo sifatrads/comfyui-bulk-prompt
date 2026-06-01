@@ -12,6 +12,29 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== "BulkPromptOllama") return;
 
+        // Heal workflows saved by the old layout (when the forceInput `positive`
+        // input was declared first, leaving a stale leading widgets_values slot
+        // that shifted every field up by one on reload). Runs after the values are
+        // assigned; if the saved array is exactly one longer than the serializable
+        // widget count, drop the leading slot and re-assign by position. Gated on
+        // the exact off-by-one so a correctly-saved array is never touched.
+        const origConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (info) {
+            const r = origConfigure ? origConfigure.apply(this, arguments) : undefined;
+            try {
+                const wv = info?.widgets_values;
+                const ser = (this.widgets ?? []).filter((w) => w.serialize !== false);
+                if (Array.isArray(wv) && wv.length === ser.length + 1) {
+                    const fixed = wv.slice(1);
+                    ser.forEach((w, i) => { if (i < fixed.length) w.value = fixed[i]; });
+                    this.setDirtyCanvas?.(true, true);
+                }
+            } catch (e) {
+                console.warn("[BulkPrompt] Ollama legacy widget migration skipped:", e);
+            }
+            return r;
+        };
+
         const origCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = async function () {
             if (origCreated) origCreated.apply(this, arguments);

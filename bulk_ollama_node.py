@@ -475,7 +475,6 @@ class BulkPromptOllama:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "positive": ("STRING", {"forceInput": True}),
                 "instruction": ("STRING", {
                     "multiline": True,
                     "default": ("You are an expert prompt engineer for image "
@@ -515,6 +514,12 @@ class BulkPromptOllama:
                                "adds (preambles, '---'/code-fence/'Prompt:' headers, "
                                "trailing offers). Turn off to use the raw reply.",
                 }),
+                # IMPORTANT: keep forceInput inputs (positive, context) AFTER every
+                # widget field. ComfyUI maps saved widget values POSITIONALLY; a
+                # forceInput input declared BEFORE a widget makes the whole node load
+                # its values shifted by one slot on reload. Declared last, it reserves
+                # no widget slot and cannot shift anything.
+                "positive": ("STRING", {"forceInput": True}),
             },
             "optional": {
                 "context": ("STRING", {
